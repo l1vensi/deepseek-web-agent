@@ -1,0 +1,35 @@
+# ==============================================================================
+# DEEPSEEK AGENT BRIDGE — GITIGNORE (SECURITY & CLEANUP)
+# ==============================================================================
+
+# Личные API-токены и секреты (НИКОГДА не должны попадать в публичный репозиторий)
+my_tokens.txt
+.env
+*.key
+*.token
+
+# Системные журналы и логи отладки
+*.log
+action_debug.log
+
+# Локальные бэкапы пользователя и индекс корзины
+.agent_backups/
+trash_index.json
+
+# Временная папка скриншотов зрения
+.agent_vision/
+
+# Кэш скомпилированного байткода Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Служебные папки редакторов и Windows
+.agents/
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/

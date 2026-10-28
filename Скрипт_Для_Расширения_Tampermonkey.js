@@ -1,0 +1,1534 @@
+// ==UserScript==
+
+// @name         DeepSeek Agent Pro Bridge (All-in-One: MCP + Trash + Continue + Audio + Panic)
+
+// @namespace    http://tampermonkey.net/
+
+// @version      13.0
+
+// @description  Автономный ИИ-агент с поддержкой MCP (поиск фото/видео), Корзины Windows, 100% авто-кликом Continue, Keep-Alive и умной диагностикой ошибок
+
+// @author       You
+
+// @match        https://chat.deepseek.com/*
+
+// @grant        none
+
+// @run-at       document-idle
+
+// ==/UserScript==
+
+
+
+(function() {
+
+    'use strict';
+
+
+
+    function initBridge() {
+
+const old=document.getElementById('deepseek-agent-bridge-ui');
+
+if(old)old.remove();
+
+
+
+let currentMode='standard';
+
+let isHandsFree=true;
+
+let isSoundEnabled=true;
+
+let isAborted=false;
+
+let currentAbortController=null;
+
+let keepAliveCtx=null;
+
+
+
+function initKeepAlive(){
+
+  if(!keepAliveCtx){
+
+    try{
+
+      const AC=window.AudioContext||window.webkitAudioContext;
+
+      if(AC){
+
+        keepAliveCtx=new AC();
+
+        const osc=keepAliveCtx.createOscillator();
+
+        const gain=keepAliveCtx.createGain();
+
+        gain.gain.value=0.00001;
+
+        osc.frequency.value=440;
+
+        osc.connect(gain);
+
+        gain.connect(keepAliveCtx.destination);
+
+        osc.start();
+
+      }
+
+    }catch(e){}
+
+  }
+
+}
+
+
+
+function playDing(isSuccess){
+
+  if(!isSoundEnabled)return;
+
+  try{
+
+    const AC=window.AudioContext||window.webkitAudioContext;
+
+    if(!AC)return;
+
+    const ctx=new AC();
+
+    const osc=ctx.createOscillator();
+
+    const gain=ctx.createGain();
+
+    osc.type=isSuccess?'sine':'triangle';
+
+    osc.frequency.setValueAtTime(isSuccess?587.33:329.63,ctx.currentTime);
+
+    if(isSuccess)osc.frequency.exponentialRampToValueAtTime(880,ctx.currentTime+0.2);
+
+    gain.gain.setValueAtTime(0.15,ctx.currentTime);
+
+    gain.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.4);
+
+    osc.connect(gain);
+
+    gain.connect(ctx.destination);
+
+    osc.start();
+
+    osc.stop(ctx.currentTime+0.45);
+
+  }catch(e){}
+
+}
+
+
+
+const p=document.createElement('div');
+
+p.id='deepseek-agent-bridge-ui';
+
+p.style.cssText='position:fixed!important;bottom:25px!important;right:25px!important;z-index:2147483647!important;background:#18181b!important;color:#fafafa!important;border:2px solid #2563eb!important;border-radius:12px!important;padding:14px 16px!important;box-shadow:0 10px 30px rgba(0,0,0,0.8)!important;font-family:sans-serif!important;font-size:13px!important;width:335px!important;display:flex!important;flex-direction:column!important;gap:8px!important;';
+
+
+
+p.innerHTML=`
+
+<div style="display:flex;justify-content:space-between;align-items:center;font-weight:bold;">
+
+  <span style="color:#60a5fa;display:flex;align-items:center;gap:6px;">⚡ Agent Pro (Auto + Sound)</span>
+
+  <span id="agent-status-badge" style="font-size:11px;padding:2px 6px;border-radius:6px;background:#16a34a;color:white;">🟢 На связи</span>
+
+</div>
+
+
+
+<div style="display:flex;gap:4px;background:#27272a;padding:3px;border-radius:8px;">
+
+  <button id="btn-mode-safe" style="flex:1;background:transparent;color:#a1a1aa;border:none;padding:5px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;">🛡️ Safe</button>
+
+  <button id="btn-mode-auto" style="flex:1;background:#2563eb;color:white;border:none;padding:5px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;">⚖️ Auto</button>
+
+  <button id="btn-mode-turbo" style="flex:1;background:transparent;color:#a1a1aa;border:none;padding:5px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;">⚡ Turbo</button>
+
+</div>
+
+
+
+<div style="display:flex;justify-content:space-between;align-items:center;background:#27272a;padding:5px 8px;border-radius:6px;gap:6px;">
+
+  <button id="btn-toggle-handsfree" style="flex:1.2;background:#16a34a;color:white;border:none;border-radius:4px;padding:4px 6px;font-size:11px;font-weight:bold;cursor:pointer;">🤖 Авто: ВКЛ</button>
+
+  <button id="btn-toggle-sound" style="flex:1;background:#2563eb;color:white;border:none;border-radius:4px;padding:4px 6px;font-size:11px;font-weight:bold;cursor:pointer;">🔔 Звук: ВКЛ</button>
+
+  <button id="btn-emergency-stop" style="flex:0.9;background:#b91c1c;color:white;border:none;border-radius:4px;padding:4px 6px;font-size:11px;font-weight:bold;cursor:pointer;" title="Остановить (Esc)">🛑 Стоп</button>
+
+</div>
+
+
+
+<div id="mode-desc" style="font-size:11px;color:#38bdf8;line-height:1.2;">Режим Auto: создание, чтение, переименование и скачивание без кликов!</div>
+
+
+
+<button id="btn-copy-prompt" style="background:#27272a;color:#e4e4e7;border:1px solid #3f3f46;border-radius:6px;padding:6px 8px;cursor:pointer;font-size:12px;text-align:left;">📋 1. Скопировать системный промпт (MCP + Корзина)</button>
+
+<button id="btn-use-skills" style="background:#1e293b;color:#38bdf8;border:1px solid #0284c7;border-radius:6px;padding:6px 8px;cursor:pointer;font-size:12px;text-align:left;font-weight:600;">🧠 2. Подключить скиллы из папки</button>
+
+<button id="btn-use-mcp" style="background:#2e1065;color:#c084fc;border:1px solid #7e22ce;border-radius:6px;padding:6px 8px;cursor:pointer;font-size:12px;text-align:left;font-weight:600;">🔌 2b. Опросить MCP инструменты</button>
+
+<button id="btn-vision-capture" style="background:#0f766e;color:#5eead4;border:1px solid #14b8a6;border-radius:4px;padding:6px;font-size:11px;font-weight:bold;cursor:pointer;display:flex;align-items:center;gap:6px;">👁️ 3. Снимок экрана для анализа (Зрение)</button>
+
+<button id="btn-execute-actions" style="background:#2563eb;color:white;border:none;border-radius:6px;padding:8px;cursor:pointer;font-weight:bold;font-size:12px;">⚡ 3. Применить действия вручную</button>
+
+
+
+<div id="agent-log" style="font-size:11px;color:#a1a1aa;max-height:75px;overflow-y:auto;background:#09090b;padding:5px;border-radius:4px;border:1px solid #27272a;">Готов к работе</div>
+
+`;
+
+document.body.appendChild(p);
+
+
+
+p.addEventListener('click', initKeepAlive);
+
+
+
+const bSafe=document.getElementById('btn-mode-safe');
+
+const bAuto=document.getElementById('btn-mode-auto');
+
+const bTurbo=document.getElementById('btn-mode-turbo');
+
+const bHandsFree=document.getElementById('btn-toggle-handsfree');
+
+const bSound=document.getElementById('btn-toggle-sound');
+
+const bStop=document.getElementById('btn-emergency-stop');
+
+const desc=document.getElementById('mode-desc');
+
+
+
+function setMode(m){
+
+  currentMode=m;
+
+  [bSafe,bAuto,bTurbo].forEach(b=>{b.style.background='transparent';b.style.color='#a1a1aa';});
+
+  if(m==='safe'){
+
+    bSafe.style.background='#16a34a';bSafe.style.color='white';
+
+    desc.innerText='Режим Safe: подтверждение на каждое действие.';
+
+  }else if(m==='standard'){
+
+    bAuto.style.background='#2563eb';bAuto.style.color='white';
+
+    desc.innerText='Режим Auto: создание, чтение, переименование и скачивание без кликов!';
+
+  }else{
+
+    bTurbo.style.background='#dc2626';bTurbo.style.color='white';
+
+    desc.innerText='Режим Turbo: полная скорость без подтверждений!';
+
+  }
+
+}
+
+
+
+bSafe.onclick=()=>setMode('safe');
+
+bAuto.onclick=()=>setMode('standard');
+
+bTurbo.onclick=()=>setMode('turbo');
+
+
+
+bHandsFree.onclick=()=>{
+
+  isHandsFree=!isHandsFree;
+
+  bHandsFree.style.background=isHandsFree?'#16a34a':'#71717a';
+
+  bHandsFree.innerText=isHandsFree?'🤖 Авто: ВКЛ':'🤖 Авто: ВЫКЛ';
+
+  document.getElementById('agent-log').innerText=isHandsFree?'🤖 Автопилот включен!':'⏸️ Автопилот выключен.';
+
+};
+
+
+
+bSound.onclick=()=>{
+
+  isSoundEnabled=!isSoundEnabled;
+
+  bSound.style.background=isSoundEnabled?'#2563eb':'#71717a';
+
+  bSound.innerText=isSoundEnabled?'🔔 Звук: ВКЛ':'🔕 Звук: ВЫКЛ';
+
+  if(isSoundEnabled)playDing(true);
+
+};
+
+
+
+function triggerEmergencyStop(){
+
+  isAborted=true;
+
+  if(currentAbortController){
+
+    try{currentAbortController.abort();}catch(e){}
+
+  }
+
+  isHandsFree=false;
+
+  bHandsFree.style.background='#71717a';
+
+  bHandsFree.innerText='🤖 Авто: ВЫКЛ';
+
+  if(window.__deepseek_agent_timers){
+
+    window.__deepseek_agent_timers.forEach(id => { try { clearInterval(id); } catch(e){} });
+
+  }
+
+
+
+  const stopBtn=document.querySelector('button[aria-label*="Stop"], button[aria-label*="Остановить"], [class*="stop"], [class*="ds-icon-stop"]');
+
+  if(stopBtn&&typeof stopBtn.click==='function'){
+
+    try{stopBtn.click();}catch(e){}
+
+  }
+
+
+
+  playDing(false);
+
+  const l=document.getElementById('agent-log');
+
+  if(l)l.innerText='🛑 ЭКСТРЕННЫЙ СТОП! Действия прерваны.';
+
+}
+
+
+
+bStop.onclick=triggerEmergencyStop;
+
+
+
+window.addEventListener('keydown',(e)=>{
+
+  if(e.key==='Escape'&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)){
+
+    triggerEmergencyStop();
+
+  }
+
+});
+
+
+
+function insertRealText(t){
+
+  const inp=document.querySelector('textarea, [contenteditable="true"]');
+
+  if(!inp)return;
+
+  inp.focus();
+
+  const existing=(inp.value||inp.innerText||'').trim();
+
+  let finalText=t;
+
+  if(existing){
+
+    if(!existing.includes(t.trim())){
+
+      finalText=existing+'\n\n'+t;
+
+    }else{
+
+      finalText=existing;
+
+    }
+
+  }
+
+  document.execCommand('selectAll',false,null);
+
+  document.execCommand('insertText',false,finalText);
+
+}
+
+
+
+function sendChat(){
+
+  const btn=document.querySelector('button[class*="send"], div[role="button"][class*="send"], [aria-label*="Send"], [aria-label*="Отправить"]');
+
+  if(btn&&!btn.disabled)btn.click();
+
+}
+
+
+
+document.getElementById('btn-copy-prompt').onclick=()=>{
+
+  const pr=`Ты — автономный Senior AI-инженер.
+
+У пользователя запущен локальный агент Pro c поддержкой MCP, системной Корзины Windows и Переименования.
+
+
+
+ГЛОБАЛЬНЫЙ ЗАПРЕТ НА ЭКОНОМИЮ ВО ВСЁМ (ZERO-ECONOMY & MAXIMUM COMPLETION):
+
+- СТРОЖАЙШЕ ЗАПРЕЩЕНО экономить, срезать углы, писать заглушки ("// TODO", "# напишите логику тут", "/* код пропущен */"), пропускать секции, упрощать алгоритмы или сжимать ТЗ!
+
+- Это правило касается АБСОЛЮТНО ВСЕГО:
+
+  • Веб-сайты и фронтенд: пиши ВСЕ запрошенные секции (если в ТЗ указано 16 секций — пиши ровно 16, а не 5!), делай полную вёрстку, интерактивные скрипты (карусели со стрелками, табы, формы, анимации) без упрощений!
+
+  • Python / Backend / Desktop: пиши 100% готовую рабочую архитектуру со всеми функциями, обработкой ошибок try/except, типами данных, валидацией и логированием. Никаких пустых функций pass!
+
+  • Игры / Алгоритмы / Скрипты: пиши полноценную механику, физику, управление, подсчёт очков, звуки и анимации.
+
+- РАЗРЕШЕНИЕ НА ДЛИННЫЙ КОД: У пользователя в браузере работает 100% надёжный авто-кликер кнопки "Continue / Продолжить генерацию". НЕ БОЙСЯ лимита токенов и НЕ ПЫТАЙСЯ сжать весь проект в один ответ! Пиши каждую строчку подробно и до конца. Если ответ оборвётся по длине — автопилот сам нажмёт Continue и продолжит генерацию, пока задача не будет выполнена целиком!
+
+
+
+ПРАВИЛО ЗАМКНУТОЙ ЦЕПОЧКИ И САМОДОСТАТОЧНОСТИ (NO HANGING REFERENCES & FULL TURNKEY):
+
+- СТРОЖАЙШЕ ЗАПРЕЩЕНО бросать проект недоделанным или оставлять "висячие ссылки" (HANGING REFERENCES)!
+
+- Если в коде одного файла ты ссылаешься на другой файл, модуль, скрипт, стили или конфиг — ты ОБЯЗАН в этом же ответе (или через цепочку Continue) выпустить команды WRITE_FILE для КАЖДОГО упомянутого файла!
+
+- Это универсальное правило для ЛЮБЫХ типов задач:
+
+  • Веб-сайты и веб-приложения: Если в index.html подключены styles.css, script.js или картинки в img/ — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО ставить точку на </html>! Сразу же следом пиши <<<ACTION: WRITE_FILE | PATH: Desktop/папка/styles.css>>> и script.js. Проект не должен открываться белым и нестилизованным!
+
+  • Python / Backend / Серверы: Если в коде есть импорты локальных файлов (from config import ..., utils.py), конфиги (.env.example, settings.json) или схемы БД — создай КАЖДЫЙ из этих файлов!
+
+  • Скрипты и консольные утилиты: Если для работы нужны внешние модули (Pillow, requests, sqlite3) — сразу добавь команду <<<ACTION: RUN_COMMAND | CMD: pip install ...>>> или создай requirements.txt.
+
+  • Боты / Игры / Автоматизация: Создавай полную экосистему (логику, конфиги, ассеты, хранилище данных).
+
+- ПРИНЦИП "ПОД КЛЮЧ" (TURNKEY): Проект в папке после твоей генерации обязан запускаться и работать СРАЗУ, с первого клика, без белых экранов, без ошибок 404 и без ручной доделки человеком!
+
+
+
+ПРАВИЛО АВТОНОМНОЙ ПАМЯТИ ПРОЕКТА (PROJECT CONTEXT & PERSISTENT MEMORY):
+
+- В каждом проекте на Рабочем столе должен быть актуальный паспорт: Desktop/ИмяПапки/PROJECT_CONTEXT.md.
+
+- Как с ним работать:
+
+  1. Если в папке уже есть PROJECT_CONTEXT.md — агент первым шагом читает его: <<<ACTION: READ_FILE | PATH: Desktop/ИмяПапки/PROJECT_CONTEXT.md>>>. Это мгновенно восстанавливает 100% контекста (стек, архитектура, сделанные шаги).
+
+  2. Если проект новый — после создания базовых файлов проекта агент создаёт в корне папки PROJECT_CONTEXT.md (описание, стек, дерево файлов, текущий статус).
+
+  3. При завершении крупных этапов агент дополняет PROJECT_CONTEXT.md новыми изменениями.
+
+- Благодаря этому память проекта ВЕЧНА: если диалог в браузере закроется или переполнится, в новом чате достаточно сказать «продолжаем проект ИмяПапки», и агент за 1 секунду продолжит работу ровно с того места, где остановился!
+
+
+
+ПРАВИЛА ДЛЯ ИЗОБРАЖЕНИЙ И РЕСУРСОВ (ANTI-404 & ANTI-BLOCK):
+
+- СТРОЖАЙШЕ ЗАПРЕЩЕНО выдумывать или угадывать случайные URL-ссылки из головы (особенно Unsplash photo-151... или Picsum) — выдуманные ссылки блокируются или дают ошибку 404!
+
+- 4 надёжных способа получить визуальные ресурсы:
+
+  1. Вызови инструмент MCP: <<<ACTION: MCP_CALL | SERVER: web_search | TOOL: search_wikipedia | ARGS: {"query": "тема"}>>> — он вернёт РЕАЛЬНЫЕ проверенные ссылки на фото из Википедии (upload.wikimedia.org).
+
+  2. Ссылайся на локальную папку проекта: img/hero.jpg, img/photo.jpg.
+
+  3. Используй генераторы дизайнерских заглушек: https://placehold.co/1200x800/ЦВЕТ_ФОНА/ЦВЕТ_ТЕКСТА.png?text=Название (например: https://placehold.co/1200x800/2e2521/fcf6ec.png?text=Hero).
+
+  4. Создавай выразительную векторную графику через встроенный SVG прямо в коде.
+
+
+
+ПРОТОКОЛ MCP (MODEL CONTEXT PROTOCOL):
+
+У тебя есть доступ к внешним инструментам MCP!
+
+- Узнать доступные инструменты: <<<ACTION: MCP_LIST_TOOLS>>>
+
+- Вызвать инструмент: <<<ACTION: MCP_CALL | SERVER: имя_сервера | TOOL: имя_инструмента | ARGS: {"параметр": "значение"}>>>
+
+Доступные из коробки серверы:
+
+1. web_search:
+
+   - search_pixabay: {"query": "тема"} — прямой поиск коммерческих 4K фото в Pixabay (5000 запросов/час, берёт ключ из my_tokens.txt)
+
+   - search_unsplash: {"query": "тема"} — дизайнерский сток Unsplash для интерьеров и архитектуры
+
+   - check_available_stocks: {} — проверка статуса фотостоков на текущем ПК (показывает, есть ли my_tokens.txt)
+
+   - search_duckduckgo: {"query": "текст"} — поиск в интернете
+
+   - search_wikipedia: {"query": "статья", "lang": "ru"} — факты и статьи
+
+   - search_free_media: {"query": "тема фото или видео", "media_type": "image", "limit": 5} — РЕАЛЬНЫЕ проверенные фото и видео (MP4/WebM) без авторских прав с готовыми командами скачивания!
+
+   - get_svg_icon: {"name": "phone или звонок", "color": "#2563eb", "size": 24} — готовые векторные SVG-иконки (Lucide)
+
+   - search_icons: {"query": "телефон или star"} — поиск иконок по ключевому слову
+
+   - analyze_website: {"url": "https://..."} — анализ сайтов-конкурентов: извлекает структуру блоков, шрифты, палитру цветов и призывы к действию (CTA)
+
+2. system_info:
+
+   - get_system_specs: {} — ОС, процессор, RAM, диск
+
+   - get_running_processes: {"limit": 10} — список процессов
+
+3. sqlite_db:
+
+   - execute_query: {"db_path": "Desktop/Папка/app.db", "query": "SQL"} — выполнение SQL
+
+   - list_tables: {"db_path": "Desktop/Папка/app.db"} — схемы таблиц
+
+
+
+СПИСОК ТВОИХ КОМАНД:
+
+1. Создать папку: <<<ACTION: CREATE_FOLDER | PATH: Desktop/ИмяПапки>>>
+
+2. Создать или записать файл (ОБЯЗАТЕЛЬНО код внутри в тройные бэктики \`\`\`!):
+
+<<<ACTION: WRITE_FILE | PATH: Desktop/ИмяПапки/файл.ext>>>
+
+\`\`\`язык
+
+код файла со всеми переносами строк
+
+\`\`\`
+
+<<<END_ACTION>>>
+
+3. Переместить (вырезать и вставить файл или папку):
+
+<<<ACTION: MOVE | FROM: Desktop/откуда/файл.ext | TO: Desktop/куда/файл.ext>>>
+
+3b. Скопировать (копировать и вставить файл или папку):
+
+<<<ACTION: COPY | FROM: Desktop/откуда/файл.ext | TO: Desktop/куда/файл.ext>>>
+
+3c. Сгенерировать AI фото/картинку/баннер (БЕСПЛАТНО, 5 моделей на выбор, чистый 1:1 квадрат без растяжений и без водяных знаков!):
+
+<<<ACTION: GENERATE_IMAGE | PROMPT: modern luxury dark villa exterior architecture night lighting 4k | MODEL: flux-realism | PATH: Desktop/ИмяПапки/images/hero.jpg>>>
+
+Доступные модели (выбирай сам под задачу, если не указано — сервер выберет автоматически):
+
+• turbo — быстрая генерация за 2 сек для общих фонов, баннеров и сайтов
+
+• flux-realism — фотореализм высшего качества: люди, лица, архитектура, интерьеры, авто
+
+• midjourney — кинематографичный арт, концепт-дизайн, постеры, насыщенные цвета
+
+• flux-anime — стиль аниме, манга, персонажи
+
+• dalle — векторные иллюстрации, графика, плоские иконки
+
+ВАЖНЫЕ ПРАВИЛА ПО ИЗОБРАЖЕНИЯМ И ЗАДЕРЖКАМ:
+
+- ЛИМИТ ГЕНЕРАЦИИ И КУЛДАУН: бесплатный AI-сервер имеет паузу (кулдаун) между генерациями: 1 картинка в 45 секунд на IP!
+
+- Поэтому за один шаг создавай через GENERATE_IMAGE ТОЛЬКО 1-2 ключевые картинки (например, главный баннер Hero или логотип).
+
+- СТРОГО ЗАПРЕЩЕНО генерировать сразу 5-10 картинок подряд через GENERATE_IMAGE — это вызовет ожидание кулдауна в 5-7 минут!
+
+- ДЛЯ ГАЛЕРЕЙ, КАТАЛОГОВ И ПОРТФОЛИО (где нужно много фото: карточки работ, до/после, товары): ВСЕГДА используй MCP инструмент 'search_free_media' — он моментально за секунду находит реальные 4K фото без задержек и кулдаунов!
+
+- ВНИМАНИЕ: СТРОГО ЗАПРЕЩЕНО вставлять гигантские простыни ручных SVG-координат прямо в HTML! Используй GENERATE_IMAGE (для 1-2 уникальных артов) или search_free_media (для галерей и каталогов)!
+
+4. Переименовать:
+
+<<<ACTION: RENAME | FROM: Desktop/СтароеИмя | TO: Desktop/НовоеИмя>>>
+
+4. Удалить в Корзину Windows:
+
+<<<ACTION: DELETE_FILE | PATH: Desktop/ИмяПапки/файл.ext>>>
+
+5. Восстановить из Корзины Windows:
+
+<<<ACTION: RESTORE_FILE | PATH: Desktop/ИмяПапки/файл.ext>>> (или <<<ACTION: RESTORE_FILE>>> для последнего)
+
+6. Посмотреть содержимое Корзины Windows:
+
+<<<ACTION: LIST_TRASH>>>
+
+7. Скачать файл/спрайт/звук:
+
+<<<ACTION: DOWNLOAD_FILE | URL: https://... | PATH: Desktop/ИмяПапки/файл.ext>>>
+
+8. Скачать папку или репозиторий с GitHub:
+
+<<<ACTION: DOWNLOAD_FOLDER | URL: https://github.com/пользователь/репо/tree/main/папка | PATH: Desktop/ИмяПапки/папка>>>
+
+9. Точечная замена строк:
+
+<<<ACTION: REPLACE_TEXT | PATH: Desktop/ИмяПапки/файл.ext>>>
+
+<<<FIND>>>старое<<<REPLACE>>>новое<<<END_ACTION>>>
+
+10. Прочитать файл/скилл: <<<ACTION: READ_FILE | PATH: Desktop/ИмяПапки/файл.ext>>>
+
+11. Показать структуру папки: <<<ACTION: LIST_DIR | PATH: Desktop/ИмяПапки>>>
+
+12. Запустить файл/приложение: <<<ACTION: OPEN_FILE | PATH: Desktop/ИмяПапки/файл.ext>>>
+
+13. Выполнить команду в консоли: <<<ACTION: RUN_COMMAND | CMD: python "Desktop/ИмяПапки/файл.py">>>
+
+14. Инструменты MCP: <<<ACTION: MCP_LIST_TOOLS>>>
+
+15. Вызов MCP: <<<ACTION: MCP_CALL | SERVER: web_search | TOOL: search_wikipedia | ARGS: {"query": "Тема"}>>>
+
+16. Откатить назад: <<<ACTION: UNDO>>>
+
+17. Получить векторную SVG-иконку (Lucide): <<<ACTION: GET_ICON | NAME: phone | COLOR: #2563eb | SIZE: 24>>>
+
+18. Проанализировать сайт-конкурент (структура, цвета, шрифты): <<<ACTION: ANALYZE_WEBSITE | URL: https://example.com>>>
+
+
+
+Всегда начинай пути с Desktop/. Код пиши начисто.`;
+
+  navigator.clipboard.writeText(pr).then(()=>{
+
+    document.getElementById('agent-log').innerText='✅ Системный промпт скопирован!';
+
+  });
+
+};
+
+
+
+document.getElementById('btn-use-skills').onclick=()=>{
+
+  insertRealText('Перед созданием проекта проверь доступные скиллы в Desktop/Веб Агент DeepSeek/skills через команду LIST_DIR, прочитай подходящие навыки через READ_FILE и примени эти профессиональные правила в разработке!');
+
+  document.getElementById('agent-log').innerText='🧠 Команда скиллов вставлена в чат!';
+
+};
+
+
+
+document.getElementById('btn-use-mcp').onclick=()=>{
+
+  insertRealText('Опроси доступные инструменты MCP через команду: <<<ACTION: MCP_LIST_TOOLS>>>');
+
+  document.getElementById('agent-log').innerText='🔌 Запрос MCP инструментов вставлен в чат!';
+
+  if(isHandsFree) setTimeout(sendChat, 500);
+
+};
+
+// ==============================================================================
+// 👁️ МОДУЛЬ ЗРЕНИЯ: БЕЗОПАСНЫЙ ЗАХВАТ С ИНТЕРАКТИВНОЙ РАМКОЙ ВЫДЕЛЕНИЯ
+// ==============================================================================
+function log(msg) {
+  const el = document.getElementById('agent-log');
+  if (el) el.innerText = msg;
+  console.log('[Agent Pro]', msg);
+}
+
+const btnVision = document.getElementById('btn-vision-capture');
+if (btnVision) {
+  btnVision.onclick = async () => {
+    try {
+      log('📸 Выберите окно для захвата...');
+      let controller = null;
+      const opts = {
+        video: { displaySurface: 'window' },
+        selfBrowserSurface: 'include',
+        surfaceSwitching: 'exclude'
+      };
+      if (typeof CaptureController !== 'undefined') {
+        try {
+          controller = new CaptureController();
+          opts.controller = controller;
+        } catch (_) {}
+      }
+      const stream = await navigator.mediaDevices.getDisplayMedia(opts);
+      if (controller && typeof controller.setFocusBehavior === 'function') {
+        try {
+          controller.setFocusBehavior('no-focus-change');
+        } catch (_) {}
+      }
+      window.focus();
+      setTimeout(() => window.focus(), 80);
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      await video.play();
+
+      const origCanvas = document.createElement('canvas');
+      origCanvas.width = video.videoWidth;
+      origCanvas.height = video.videoHeight;
+      const oCtx = origCanvas.getContext('2d');
+      oCtx.drawImage(video, 0, 0);
+      stream.getTracks().forEach(t => t.stop());
+
+      // Модальное окно инструмента выделения
+      const overlay = document.createElement('div');
+      overlay.id = 'agent-vision-modal';
+      overlay.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.85);z-index:999999;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;color:#fff;backdrop-filter:blur(5px);user-select:none;';
+
+      const box = document.createElement('div');
+      box.style.cssText = 'background:#18181b;border:1px solid #27272a;border-radius:12px;padding:16px;max-width:94vw;max-height:94vh;display:flex;flex-direction:column;align-items:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.8);';
+
+      const titleBar = document.createElement('div');
+      titleBar.style.cssText = 'width:100%;display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;';
+      titleBar.innerHTML = '<div style="font-size:15px;font-weight:bold;color:#5eead4;display:flex;align-items:center;gap:6px;">👁️ Выделите область мышкой <span style="font-size:11px;color:#a1a1aa;font-weight:normal;">(зажмите левую кнопку и потяните)</span></div><div id="vision-dim-badge" style="font-size:12px;color:#38bdf8;font-weight:bold;background:#0f172a;padding:2px 8px;border-radius:4px;border:1px solid #1e293b;">Всё окно (' + origCanvas.width + '×' + origCanvas.height + ')</div>';
+
+      // Вычисляем масштаб холста под размер экрана
+      const maxW = Math.min(window.innerWidth * 0.88, 1200);
+      const maxH = Math.min(window.innerHeight * 0.70, 700);
+      const scale = Math.min(maxW / origCanvas.width, maxH / origCanvas.height, 1);
+      
+      const dispW = Math.round(origCanvas.width * scale);
+      const dispH = Math.round(origCanvas.height * scale);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = dispW;
+      canvas.height = dispH;
+      canvas.style.cssText = 'border:1px solid #3f3f46;border-radius:6px;cursor:crosshair;box-shadow:0 10px 15px -3px rgba(0,0,0,0.5);display:block;';
+      const ctx = canvas.getContext('2d');
+
+      let isDrawing = false;
+      let startX = 0, startY = 0;
+      let curX = 0, curY = 0;
+      let selectedCrop = null; // {x, y, w, h} в координатах origCanvas
+
+      function redraw() {
+        ctx.clearRect(0, 0, dispW, dispH);
+        ctx.drawImage(origCanvas, 0, 0, dispW, dispH);
+
+        if (selectedCrop && selectedCrop.w > 10 && selectedCrop.h > 10) {
+          // 1. Затемнение вокруг выделенной зоны
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+          ctx.fillRect(0, 0, dispW, dispH);
+
+          // 2. Очистка и отрисовка чистой яркой области внутри выделения
+          const dx = selectedCrop.x * scale;
+          const dy = selectedCrop.y * scale;
+          const dw = selectedCrop.w * scale;
+          const dh = selectedCrop.h * scale;
+
+          ctx.drawImage(origCanvas, selectedCrop.x, selectedCrop.y, selectedCrop.w, selectedCrop.h, dx, dy, dw, dh);
+
+          // 3. Неоновая рамка выделения
+          ctx.strokeStyle = '#14b8a6';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([6, 4]);
+          ctx.strokeRect(dx, dy, dw, dh);
+
+          // 4. Угловые маркеры
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#2dd4bf';
+          const sz = 6;
+          ctx.fillRect(dx - sz/2, dy - sz/2, sz, sz);
+          ctx.fillRect(dx + dw - sz/2, dy - sz/2, sz, sz);
+          ctx.fillRect(dx - sz/2, dy + dh - sz/2, sz, sz);
+          ctx.fillRect(dx + dw - sz/2, dy + dh - sz/2, sz, sz);
+        }
+      }
+
+      redraw();
+
+      // Обработка рисования рамки мышкой
+      canvas.onmousedown = (e) => {
+        e.preventDefault();
+        isDrawing = true;
+        const rect = canvas.getBoundingClientRect();
+        startX = e.clientX - rect.left;
+        startY = e.clientY - rect.top;
+        curX = startX;
+        curY = startY;
+      };
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isDrawing) return;
+        const rect = canvas.getBoundingClientRect();
+        curX = Math.max(0, Math.min(e.clientX - rect.left, dispW));
+        curY = Math.max(0, Math.min(e.clientY - rect.top, dispH));
+
+        const left = Math.min(startX, curX);
+        const top = Math.min(startY, curY);
+        const w = Math.abs(curX - startX);
+        const h = Math.abs(curY - startY);
+
+        if (w > 10 && h > 10) {
+          selectedCrop = {
+            x: Math.round(left / scale),
+            y: Math.round(top / scale),
+            w: Math.round(w / scale),
+            h: Math.round(h / scale)
+          };
+          const badge = document.getElementById('vision-dim-badge');
+          if (badge) badge.innerText = 'Область: ' + selectedCrop.w + '×' + selectedCrop.h + ' px';
+          confirmBtn.innerHTML = '✅ Отправить выделенную область (' + selectedCrop.w + '×' + selectedCrop.h + ')';
+        }
+        redraw();
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (isDrawing) {
+          isDrawing = false;
+        }
+      });
+
+      // Панель кнопок внизу
+      const btnRow = document.createElement('div');
+      btnRow.style.cssText = 'display:flex;gap:10px;margin-top:14px;width:100%;justify-content:space-between;align-items:center;';
+
+      const leftBtns = document.createElement('div');
+      leftBtns.style.cssText = 'display:flex;gap:8px;';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.innerText = '❌ Отмена (Esc)';
+      cancelBtn.style.cssText = 'background:#27272a;color:#e4e4e7;border:1px solid #3f3f46;border-radius:6px;padding:8px 14px;cursor:pointer;font-weight:500;';
+
+      const resetBtn = document.createElement('button');
+      resetBtn.innerText = '🔄 Сбросить рамку';
+      resetBtn.style.cssText = 'background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:6px;padding:8px 14px;cursor:pointer;font-weight:500;';
+      resetBtn.onclick = () => {
+        selectedCrop = null;
+        redraw();
+        const badge = document.getElementById('vision-dim-badge');
+        if (badge) badge.innerText = 'Всё окно (' + origCanvas.width + '×' + origCanvas.height + ')';
+        confirmBtn.innerHTML = '✅ Отправить всё окно целиком';
+      };
+
+      leftBtns.appendChild(cancelBtn);
+      leftBtns.appendChild(resetBtn);
+
+      const rightBtns = document.createElement('div');
+      rightBtns.style.cssText = 'display:flex;gap:8px;';
+
+      const fullBtn = document.createElement('button');
+      fullBtn.innerText = '🖼️ Всё окно';
+      fullBtn.style.cssText = 'background:#1e293b;color:#38bdf8;border:1px solid #0284c7;border-radius:6px;padding:8px 14px;cursor:pointer;font-weight:bold;';
+      fullBtn.onclick = () => {
+        selectedCrop = null;
+        sendResult();
+      };
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.innerHTML = '✅ Отправить всё окно целиком';
+      confirmBtn.style.cssText = 'background:#16a34a;color:#fff;border:none;border-radius:6px;padding:8px 18px;cursor:pointer;font-weight:bold;display:flex;align-items:center;gap:6px;box-shadow:0 4px 6px -1px rgba(22,163,74,0.4);';
+
+      function closeModal() {
+        if (document.body.contains(overlay)) {
+          document.body.removeChild(overlay);
+        }
+      }
+
+      cancelBtn.onclick = () => {
+        closeModal();
+        log('Снимок отменен пользователем.');
+      };
+
+      function sendResult() {
+        let finalCanvas = origCanvas;
+        let isArea = false;
+        if (selectedCrop && selectedCrop.w > 10 && selectedCrop.h > 10) {
+          isArea = true;
+          finalCanvas = document.createElement('canvas');
+          finalCanvas.width = selectedCrop.w;
+          finalCanvas.height = selectedCrop.h;
+          finalCanvas.getContext('2d').drawImage(origCanvas, selectedCrop.x, selectedCrop.y, selectedCrop.w, selectedCrop.h, 0, 0, selectedCrop.w, selectedCrop.h);
+        }
+
+        finalCanvas.toBlob(async (blob) => {
+          closeModal();
+          if (!blob) return;
+
+          // 1. Копируем в буфер обмена Windows (Ctrl+V)
+          try {
+            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+          } catch (_) {}
+
+          const file = new File([blob], 'screenshot.png', { type: 'image/png' });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+
+          // 2. Прикрепляем ровно ОДИН раз (без дублей)
+          let attached = false;
+          const fileInput = document.querySelector('input[type="file"]');
+          if (fileInput) {
+            try {
+              fileInput.files = dt.files;
+              fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+              attached = true;
+            } catch (_) {}
+          }
+
+          if (!attached) {
+            const ta = document.querySelector('textarea, div[contenteditable="true"]');
+            if (ta) {
+              try {
+                const pasteEv = new ClipboardEvent('paste', {
+                  bubbles: true,
+                  cancelable: true,
+                  clipboardData: dt
+                });
+                ta.dispatchEvent(pasteEv);
+              } catch (_) {}
+            }
+          }
+
+          // Поле ввода оставляем полностью чистым и фокусируем курсор для любого вопроса пользователя
+          const inp = document.querySelector('textarea, div[contenteditable="true"]');
+          if (inp) inp.focus();
+
+          log('✅ ' + (isArea ? 'Выделенная область' : 'Снимок') + ' прикреплен!');
+          playSound('ding');
+        }, 'image/png');
+      }
+
+      confirmBtn.onclick = sendResult;
+
+      rightBtns.appendChild(fullBtn);
+      rightBtns.appendChild(confirmBtn);
+
+      btnRow.appendChild(leftBtns);
+      btnRow.appendChild(rightBtns);
+
+      box.appendChild(titleBar);
+      box.appendChild(canvas);
+      box.appendChild(btnRow);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+
+      // Закрытие по клавише Esc
+      const escHandler = (e) => {
+        if (e.key === 'Escape') {
+          window.removeEventListener('keydown', escHandler);
+          cancelBtn.click();
+        }
+      };
+      window.addEventListener('keydown', escHandler);
+
+    } catch (err) {
+      if (err.name !== 'NotAllowedError') {
+        log('⚠️ Ошибка захвата: ' + err.message);
+      } else {
+        log('Захват экрана отменен.');
+      }
+    }
+  };
+}
+
+
+
+
+
+
+
+
+
+
+
+document.getElementById('btn-execute-actions').onclick=async()=>{
+
+  isAborted=false;
+
+  const l=document.getElementById('agent-log');
+
+  l.innerText='🔍 Поиск команд...';
+
+  const bs=document.querySelectorAll('.ds-markdown');
+
+  if(!bs.length)return;
+
+  const lastEl=bs[bs.length-1];
+
+  const t=lastEl.innerText;
+
+
+
+
+
+  const acts=[];
+
+  let m;
+
+
+
+  // 1. MCP Tools
+
+  const mcpListRe=/<<<ACTION:\s*MCP_LIST_TOOLS>>>/g;
+
+  while((m=mcpListRe.exec(t))!==null) acts.push({action:'MCP_LIST_TOOLS',mode:currentMode,idx:m.index});
+
+
+
+  const mcpCallRe=/<<<ACTION:\s*MCP_CALL\s*\|\s*SERVER:\s*([^|]+)\|\s*TOOL:\s*([^|]+)\|\s*ARGS:\s*([\s\S]*?)>>>/g;
+
+  while((m=mcpCallRe.exec(t))!==null) acts.push({action:'MCP_CALL',server:m[1].trim(),tool:m[2].trim(),args:m[3].trim(),mode:currentMode,idx:m.index});
+
+
+
+  // 2. Trash Restore & List Trash
+
+  const resRe=/<<<ACTION:\s*(?:RESTORE_FILE|RESTORE_TRASH|RESTORE_FOLDER)(?:\s*\|\s*PATH:\s*([^>]+))?>>>/g;
+
+  while((m=resRe.exec(t))!==null) acts.push({action:'RESTORE_FILE',path:(m[1]||'').trim(),mode:currentMode,idx:m.index});
+
+
+
+  const listTrashRe=/<<<ACTION:\s*(?:LIST_TRASH|TRASH)>>>/g;
+
+  while((m=listTrashRe.exec(t))!==null) acts.push({action:'LIST_TRASH',mode:currentMode,idx:m.index});
+
+
+
+  // 2b. Generate AI Image
+
+  const imgRe=/<<<ACTION:\s*(?:GENERATE_IMAGE|GEN_IMAGE|CREATE_IMAGE)\s*\|\s*PROMPT:\s*([^|]+)(?:\|\s*MODEL:\s*([^|]+))?\|\s*PATH:\s*([^>]+)>>>/g;
+
+  while((m=imgRe.exec(t))!==null) acts.push({action:'GENERATE_IMAGE',prompt:m[1].trim(),model:m[2]?m[2].trim():'',path:m[3].trim(),mode:currentMode,idx:m.index});
+
+
+
+  // 2c. Copy & Paste (files & folders)
+
+  const cpRe=/<<<ACTION:\s*(?:COPY|COPY_FILE|COPY_FOLDER)\s*\|\s*FROM:\s*([^|]+)\|\s*TO:\s*([^>]+)>>>/g;
+
+  while((m=cpRe.exec(t))!==null) acts.push({action:'COPY',from:m[1].trim(),to:m[2].trim(),mode:currentMode,idx:m.index});
+
+
+
+  // 3. Rename & Move (files & folders)
+
+  const renRe=/<<<ACTION:\s*(?:RENAME|MOVE|RENAME_FILE|RENAME_FOLDER|MOVE_FILE|MOVE_FOLDER)\s*\|\s*FROM:\s*([^|]+)\|\s*TO:\s*([^>]+)>>>/g;
+
+  while((m=renRe.exec(t))!==null) acts.push({action:'RENAME',from:m[1].trim(),to:m[2].trim(),mode:currentMode,idx:m.index});
+
+
+
+  // 4. File & folder operations
+
+  const dfl=/<<<ACTION:\s*DOWNLOAD_FOLDER\s*\|\s*URL:\s*([^|]+)\|\s*PATH:\s*([^>]+)>>>/g;
+
+  while((m=dfl.exec(t))!==null) acts.push({action:'DOWNLOAD_FOLDER',url:m[1].trim(),path:m[2].trim(),mode:currentMode,idx:m.index});
+
+
+
+  const dl=/<<<ACTION:\s*DOWNLOAD_FILE\s*\|\s*URL:\s*([^|]+)\|\s*PATH:\s*([^>]+)>>>/g;
+
+  while((m=dl.exec(t))!==null) acts.push({action:'DOWNLOAD_FILE',url:m[1].trim(),path:m[2].trim(),mode:currentMode,idx:m.index});
+
+
+
+  const lr=/<<<ACTION:\s*LIST_DIR\s*\|\s*PATH:\s*([^>]+)>>>/g;
+
+  while((m=lr.exec(t))!==null) acts.push({action:'LIST_DIR',path:m[1].trim(),mode:currentMode,idx:m.index});
+
+
+
+  const cr=/<<<ACTION:\s*RUN_COMMAND\s*\|\s*CMD:\s*([^>]+)>>>/g;
+
+  while((m=cr.exec(t))!==null) acts.push({action:'RUN_COMMAND',cmd:m[1].trim(),mode:currentMode,idx:m.index});
+
+
+
+  const or=/<<<ACTION:\s*OPEN_FILE\s*\|\s*PATH:\s*([^>]+)>>>/g;
+
+  while((m=or.exec(t))!==null) acts.push({action:'OPEN_FILE',path:m[1].trim(),mode:currentMode,idx:m.index});
+
+
+
+  const rr=/<<<ACTION:\s*READ_FILE\s*\|\s*PATH:\s*([^>]+)>>>/g;
+
+  while((m=rr.exec(t))!==null) acts.push({action:'READ_FILE',path:m[1].trim(),mode:currentMode,idx:m.index});
+
+
+
+  const fr=/<<<ACTION:\s*CREATE_FOLDER\s*\|\s*PATH:\s*([^>]+)>>>/g;
+
+  while((m=fr.exec(t))!==null) acts.push({action:'CREATE_FOLDER',path:m[1].trim(),mode:currentMode,idx:m.index});
+
+
+
+  const delr=/<<<ACTION:\s*(?:DELETE_FILE|DELETE_FOLDER)\s*\|\s*PATH:\s*([^>]+)>>>/g;
+
+  while((m=delr.exec(t))!==null) acts.push({action:'DELETE_FILE',path:m[1].trim(),mode:currentMode,idx:m.index});
+
+
+
+  const undor=/<<<ACTION:\s*UNDO>>>/g;
+
+  while((m=undor.exec(t))!==null) acts.push({action:'UNDO',mode:currentMode,idx:m.index});
+
+
+
+  const rtr=/<<<ACTION:\s*REPLACE_TEXT\s*\|\s*PATH:\s*([^>]+)>>>[\s\S]*?<<<FIND>>>([\s\S]*?)<<<REPLACE>>>([\s\S]*?)<<<END_ACTION>>>/g;
+
+  while((m=rtr.exec(t))!==null) acts.push({action:'REPLACE_TEXT',path:m[1].trim(),target:m[2],replacement:m[3],mode:currentMode,idx:m.index});
+
+
+
+  const wr=/<<<ACTION:\s*WRITE_FILE\s*\|\s*PATH:\s*([^>]+)>>>([\s\S]*?)<<<END_ACTION>>>/g;
+
+  while((m=wr.exec(t))!==null){
+
+    let code=m[2].trim().replace(/^```[a-zA-Z0-9_-]*\s*\n?/,'').replace(/\n?```\s*$/,'');
+
+    const lines=code.split('\n');
+
+    const trash=['copy','download','run','preview','копировать','скачать','запустить','просмотр','python','py','html','javascript','js','css'];
+
+    while(lines.length&&trash.includes(lines[0].trim().toLowerCase()))lines.shift();
+
+    acts.push({action:'WRITE_FILE',path:m[1].trim(),content:lines.join('\n'),mode:currentMode,idx:m.index});
+
+  }
+
+
+
+  if(!acts.length){
+
+    l.innerText='⚠️ В ответе нет команд.';
+
+    return;
+
+  }
+
+
+
+  acts.sort((a,b)=>a.idx-b.idx);
+
+  l.innerText='Найдено действий: '+acts.length+'. Выполнение...';
+
+  let hasErrors=false;
+
+  let hasFeed=false;
+
+  const reportLines=[];
+
+
+
+  for(let i=0;i<acts.length;i++){
+
+    if(isAborted){
+
+      l.innerText='🛑 Действия экстренно остановлены пользователем!';
+
+      return;
+
+    }
+
+    const a=acts[i];
+
+    l.innerText=`[${i+1}/${acts.length}] Выполняю ${a.action}...`;
+
+    currentAbortController=new AbortController();
+
+    try{
+
+      const r=await fetch('http://127.0.0.1:4050/api/action',{
+
+        method:'POST',
+
+        headers:{'Content-Type':'application/json'},
+
+        body:JSON.stringify(a),
+
+        signal:currentAbortController.signal
+
+      });
+
+      const j=await r.json();
+
+      const isErr=j.status==='error'||j.status==='rejected';
+
+      if(isErr)hasErrors=true;
+
+      const detail = (a.action==='RUN_COMMAND' && j.output) ? (j.output.length>80?j.output.substring(0,80)+'...':j.output) : (j.message||j.status);
+
+      reportLines.push(`${isErr?'❌':'✅'} ${a.action}: ${detail}`);
+
+      l.innerText=`[${i+1}/${acts.length}] ${j.message||j.status}`;
+
+
+
+      if((a.action==='LIST_DIR'||a.action==='READ_FILE')&&j.content){
+
+        insertRealText('[Данные '+a.path+']:\n'+j.content+'\n');
+
+        l.innerText+=' (Вставлено в чат)';
+
+      }
+
+      if(a.action==='LIST_TRASH'&&j.content){
+
+        insertRealText(j.content+'\n');
+
+        l.innerText+=' (Список корзины вставлен)';
+
+      }
+
+      if((a.action==='MCP_LIST_TOOLS'||a.action==='MCP_CALL')&&j.content){
+
+        hasFeed=true;
+
+        const tag=a.action==='MCP_LIST_TOOLS'?'[Список MCP инструментов]':'[Результат MCP ('+a.server+' -> '+a.tool+')]';
+
+        insertRealText(tag+':\n'+j.content+'\n');
+
+        l.innerText+=' (MCP результат вставлен)';
+
+      }
+
+
+
+      await new Promise(res=>setTimeout(res,500));
+
+    }catch(e){
+
+      if(isAborted)return;
+
+      hasErrors=true;
+
+      reportLines.push(`❌ ${a.action}: Ошибка соединения (${e.message})`);
+
+      l.innerText='❌ Ошибка: '+e.message;
+
+    }
+
+  }
+
+
+
+  if(isAborted)return;
+
+
+
+  if(hasErrors){
+
+    playDing(false);
+
+    const errReport=`[Отчёт выполнения команд]:\n${reportLines.join('\n')}\n\n⚠️ Замечены ошибки! Проанализируй сбой, смени стратегию (например, вызови MCP web_search для поиска реального источника, используй векторный SVG или сошлись на локальные файлы) и пришли исправленные команды.`;
+
+    insertRealText(errReport);
+
+    l.innerText='⚠️ Ошибки! Отчёт добавлен в чат.';
+
+    if(isHandsFree) setTimeout(sendChat,800);
+
+  }else if(hasFeed){
+
+    playDing(true);
+
+    l.innerText='✅ Ответ передан в чат.';
+
+    if(isHandsFree) setTimeout(sendChat,800);
+
+  }else{
+
+    playDing(true);
+
+    l.innerText='✅ Все '+acts.length+' действий успешно завершены!';
+
+  }
+
+};
+
+
+
+// 100% ЖЕЛЕЗНЫЙ АВТО-КЛИК CONTINUE (Прямой клик по кнопке с эмуляцией мыши и защитой от ложных срабатываний)
+
+let lastContinueClick=0;
+
+
+
+function findAndClickContinue(){
+
+  // 1. Ищем строго среди кнопок и кликабельных элементов
+
+  const buttons = Array.from(document.querySelectorAll('button, [role="button"], div[class*="button"], div[class*="btn"], a[role="button"]')).reverse();
+
+  for(const btn of buttons){
+
+    if(btn.closest('#deepseek-agent-bridge-ui'))continue;
+
+    if(btn.closest('pre')||btn.closest('code')||btn.closest('textarea')||btn.closest('input'))continue;
+
+
+
+    const rect=btn.getBoundingClientRect();
+
+    if(rect.width<20||rect.height<15)continue;
+
+    if(rect.bottom<50||rect.top>window.innerHeight)continue;
+
+
+
+    const style=window.getComputedStyle(btn);
+
+    if(style.display==='none'||style.visibility==='hidden'||style.opacity==='0'||style.pointerEvents==='none')continue;
+
+
+
+    const raw=(btn.innerText||btn.textContent||'').trim().toLowerCase();
+
+    const aria=(btn.getAttribute('aria-label')||'').toLowerCase();
+
+
+
+    const isMatch = raw==='continue'||raw==='продолжить'||raw==='continue generating'||raw==='продолжить генерацию'||
+
+                    (raw.startsWith('continue')&&raw.length<20)||
+
+                    aria.includes('continue')||aria.includes('продолж');
+
+
+
+    if(isMatch){
+
+      const cx=rect.left+rect.width/2;
+
+      const cy=rect.top+rect.height/2;
+
+
+
+      try{if(typeof btn.focus==='function')btn.focus();}catch(e){}
+
+
+
+      const downOpts={bubbles:true,cancelable:true,composed:true,view:window,clientX:cx,clientY:cy,screenX:cx,screenY:cy,button:0,buttons:1,which:1};
+
+      const upOpts={bubbles:true,cancelable:true,composed:true,view:window,clientX:cx,clientY:cy,screenX:cx,screenY:cy,button:0,buttons:0,which:1};
+
+
+
+      try{if(typeof btn.focus==='function')btn.focus();}catch(e){}
+
+      try{HTMLElement.prototype.click.call(btn);}catch(e){}
+
+      try{btn.click();}catch(e){}
+
+      try{btn.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}
+
+
+
+      return true;
+
+    }
+
+  }
+
+
+
+  // 2. Резервный поиск: любой элемент строго вне разметки markdown текста
+
+  const allEls=Array.from(document.querySelectorAll('div, span, p')).reverse();
+
+  for(const el of allEls){
+
+    if(el.closest('#deepseek-agent-bridge-ui'))continue;
+
+    if(el.closest('.ds-markdown')||el.closest('pre')||el.closest('code'))continue;
+
+
+
+    const rect=el.getBoundingClientRect();
+
+    if(rect.width<20||rect.height<15)continue;
+
+
+
+    const raw=(el.innerText||el.textContent||'').trim().toLowerCase();
+
+    if(raw==='continue'||raw==='продолжить'){
+
+      const parentBtn=el.closest('button, [role="button"], div[class*="button"]')||el;
+
+      try{parentBtn.click();}catch(e){}
+
+      try{el.click();}catch(e){}
+
+      return true;
+
+    }
+
+  }
+
+
+
+  return false;
+
+}
+
+
+
+const _timerContinue = setInterval(() => {
+
+  if(!isHandsFree)return;
+
+  const now=Date.now();
+
+  if(now-lastContinueClick<1500)return;
+
+
+
+  if(findAndClickContinue()){
+
+    lastContinueClick=now;
+
+    const l=document.getElementById('agent-log');
+
+    if(l)l.innerText='⚡ Авто-клик Continue (нажата кнопка в свежем сообщении)!';
+
+  }
+
+}, 600);
+
+window.__deepseek_agent_timers.push(_timerContinue);
+
+
+
+// Автопилот (Hands-Free): надёжный запуск только после полного завершения ответа DeepSeek
+
+let lastObservedLength = -1;
+
+let stableSeconds = 0;
+
+
+
+const _timerAutopilot = setInterval(() => {
+
+  if (!isHandsFree) return;
+
+
+
+  const ms = document.querySelectorAll('.ds-markdown');
+
+  if (!ms.length) return;
+
+  const lastMsg = ms[ms.length - 1];
+
+  if (lastMsg.dataset.agentExecuted) return;
+
+
+
+  const text = (lastMsg.innerText || '').trim();
+
+  if (!text.includes('<<<ACTION:')) return;
+
+
+
+  // Если на экране кнопка Continue — ждём пока кликер нажмёт её и ответ допишется
+
+  const hasContinue = Array.from(document.querySelectorAll('button, div[role="button"], span')).some(el => {
+
+    if (el.closest('#deepseek-agent-bridge-ui')) return false;
+
+    const txt = (el.innerText || '').trim().toLowerCase();
+
+    return (txt === 'continue' || txt === 'продолжить' || txt === 'continue generating' || txt === 'продолжить генерацию') && el.getBoundingClientRect().width > 0;
+
+  });
+
+  if (hasContinue) {
+
+    stableSeconds = 0;
+
+    return;
+
+  }
+
+
+
+  // Сверяем длину текста с предыдущей секундой: пока текст растёт — DeepSeek печатает!
+
+  if (text.length !== lastObservedLength) {
+
+    lastObservedLength = text.length;
+
+    stableSeconds = 0;
+
+    const l = document.getElementById('agent-log');
+
+    if (l && !l.innerText.includes('Выполняю')) {
+
+      l.innerText = '⏳ DeepSeek пишет ответ...';
+
+    }
+
+    return;
+
+  }
+
+
+
+  // Текст не меняется — ведём отсчёт стабильности (ровно 3 секунды покоя)
+
+  stableSeconds++;
+
+  if (stableSeconds < 3) {
+
+    const l = document.getElementById('agent-log');
+
+    if (l && !l.innerText.includes('Выполняю')) {
+
+      l.innerText = `⏳ Ожидание завершения (${3 - stableSeconds}с)...`;
+
+    }
+
+    return;
+
+  }
+
+
+
+  // Текст полностью завершён и не двигался 3 секунды: запускаем!
+
+  lastMsg.dataset.agentExecuted = 'true';
+
+  const execBtn = document.getElementById('btn-execute-actions');
+
+  if (execBtn) {
+
+    const l = document.getElementById('agent-log');
+
+    if (l) l.innerText = '⚡ [Автопилот] Ответ готов! Применяю действия...';
+
+    execBtn.click();
+
+  }
+
+}, 1000);
+
+window.__deepseek_agent_timers.push(_timerAutopilot);
+
+    }
+
+
+
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+
+        setTimeout(initBridge, 1000);
+
+    } else {
+
+        window.addEventListener('DOMContentLoaded', () => setTimeout(initBridge, 1000));
+
+    }
+
+})();
+

@@ -1,0 +1,5 @@
+{
+    "backup_enabled": true,
+    "retention_days": 7,
+    "max_backup_files": 100
+}

@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "system_info": {
+      "command": "python",
+      "args": ["mcp_servers/system_info.py"],
+      "description": "Мониторинг Windows: характеристики ПК, процессор, RAM, свободное место на диске и активные процессы."
+    },
+    "web_search": {
+      "command": "python",
+      "args": ["mcp_servers/web_search.py"],
+      "description": "Поиск в Интернете через DuckDuckGo и Википедию (статьи, факты, проверенные изображения без 404)."
+    },
+    "sqlite_db": {
+      "command": "python",
+      "args": ["mcp_servers/sqlite_db.py"],
+      "description": "Локальная база данных SQLite: выполнение запросов, создание таблиц и анализ данных."
+    }
+  }
+}

@@ -1,0 +1,56 @@
+# ==============================================================================
+# CONFIGURATION OF TOKENS & AI SERVERS (my_tokens.txt)
+# ==============================================================================
+# This file is NEVER committed to GitHub (listed in .gitignore for security).
+#
+# IMPORTANT: THE AGENT WORKS 100% OUT-OF-THE-BOX WITHOUT THIS FILE!
+# If nothing is configured here, the agent automatically:
+#  1. Searches copyright-free photos via Wikimedia Commons (Free, zero keys).
+#  2. Generates AI images via FLUX (Free, zero keys).
+#
+# Only edit this file if you want to connect your own external services or servers!
+# ==============================================================================
+
+
+# ------------------------------------------------------------------------------
+# 1. COPYRIGHT-FREE PHOTO STOCKS (FOR WEBSITES & LANDING PAGES)
+# ------------------------------------------------------------------------------
+# Photos from these stocks are 100% legal for commercial projects:
+
+# Pixabay (4K commercial stock: interiors, people, renovation, food):
+# Free API key (5000 requests/hour): https://pixabay.com/api/docs/
+PIXABAY_API_KEY=
+
+# Unsplash (designer architecture, high-resolution aesthetic photos):
+# Free API key: https://unsplash.com/developers
+UNSPLASH_ACCESS_KEY=
+
+# Pexels (popular photo & video stock):
+# Free API key: https://www.pexels.com/api/
+PEXAFY_API_KEY=
+
+
+# ------------------------------------------------------------------------------
+# 2. UNIVERSAL AI IMAGE GENERATION GATEWAY (OPENAI-COMPATIBLE)
+# ------------------------------------------------------------------------------
+# Connect ANY AI image server in the world:
+# Google AI Studio, OpenAI DALL-E 3, OpenRouter, Together AI, local Fooocus / Stable Diffusion.
+#
+# 1) PRIMARY AI SERVER:
+# Example for OpenAI DALL-E: https://api.openai.com/v1/images/generations
+CUSTOM_IMAGE_API_URL=
+CUSTOM_IMAGE_API_KEY=
+CUSTOM_IMAGE_MODEL=dall-e-3
+
+# 2) BACKUP / SECONDARY SERVER (Auto-fallback if primary runs out of credits):
+CUSTOM_IMAGE_API_URL_2=
+CUSTOM_IMAGE_API_KEY_2=
+CUSTOM_IMAGE_MODEL_2=flux-schnell
+
+
+# ------------------------------------------------------------------------------
+# 3. CUSTOM IMAGE SEARCH GATEWAY (OPTIONAL)
+# ------------------------------------------------------------------------------
+# If you have your own search API (SerpApi, Google Custom Search, Brave):
+CUSTOM_SEARCH_API_URL=
+CUSTOM_SEARCH_API_KEY=
